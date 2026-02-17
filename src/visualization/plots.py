@@ -28,12 +28,47 @@ def save_training_curves(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     epochs = np.arange(1, len(train_losses) + 1)
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_losses, label="Train Loss")
-    plt.plot(epochs, val_losses, label="Validation Loss")
+    best_val_index = int(np.argmin(val_losses))
+    best_epoch = int(epochs[best_val_index])
+    best_val_loss = float(val_losses[best_val_index])
+
+    plt.figure(figsize=(8.5, 5.2))
+    plt.plot(epochs, train_losses, label="Train Loss", linewidth=2.0)
+    plt.plot(epochs, val_losses, label="Validation Loss", linewidth=2.0)
+
+    plt.axvline(
+        x=best_epoch,
+        color="red",
+        linestyle="--",
+        linewidth=1.6,
+        alpha=0.9,
+        label=f"Best val epoch ({best_epoch})",
+    )
+    plt.scatter(
+        [best_epoch],
+        [best_val_loss],
+        color="red",
+        s=60,
+        zorder=5,
+    )
     plt.xlabel("Epoch")
     plt.ylabel("MSE Loss")
     plt.title(title)
+
+    summary = (
+        f"Best val: {best_val_loss:.4f} (epoch {best_epoch})\n"
+        f"Final train: {train_losses[-1]:.4f} | Final val: {val_losses[-1]:.4f}"
+    )
+    plt.text(
+        0.02,
+        0.98,
+        summary,
+        transform=plt.gca().transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.75},
+    )
+
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
