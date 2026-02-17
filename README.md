@@ -9,14 +9,15 @@
 
 ## Overview
 
-This project builds and compares three progressively richer models for
+This project builds and compares four progressively richer models for
 predicting the **log-price** of Airbnb listings in London:
 
-| Model          | Features                                    | Architecture                             |
-| -------------- | ------------------------------------------- | ---------------------------------------- |
-| **Baseline**   | Tabular (numeric + categorical)             | OLS & Random Forest (scikit-learn)       |
-| **Text Model** | Text (description + neighbourhood overview) | Embedding → LSTM → Linear head (PyTorch) |
-| **Hybrid**     | Tabular + Text                              | MLP + LSTM → Late fusion (PyTorch)       |
+| Model           | Features                                    | Architecture                             |
+| --------------- | ------------------------------------------- | ---------------------------------------- |
+| **Baseline**    | Tabular (numeric + categorical)             | OLS & Random Forest (scikit-learn)       |
+| **Text Model**  | Text (description + neighbourhood overview) | Embedding → LSTM → Linear head (PyTorch) |
+| **Hybrid**      | Tabular + Text                              | MLP + LSTM → Late fusion (PyTorch)       |
+| **Transformer** | Text (description + neighbourhood overview) | Embedding → Transformer Encoder → Linear |
 
 Data is sourced from [Inside Airbnb](http://insideairbnb.com/).
 
@@ -29,7 +30,7 @@ src/
 ├── features/              # Text & tabular feature engineering
 ├── models/                # PyTorch model architectures
 ├── training/              # Training scripts (CLI entry points)
-└── visualization/         # Plot generation
+└── visualization/         # Plot generation + interpretability
 ```
 
 ## Installation
@@ -56,7 +57,7 @@ pip install -r requirements.txt
 
 ## Reproducing the Results
 
-Run the four steps below **in order**. All hyperparameters are configured
+Run the six steps below **in order**. All hyperparameters are configured
 in `src/config.py` — the CLI commands can stay minimal.
 
 > Replace `uv run` with `python` if you use a regular virtualenv.
@@ -95,13 +96,41 @@ a comparison chart (`data/results/london/comparison_chart.png`):
 uv run python src/training/train_hybrid_model.py --use-neighborhood-overview
 ```
 
+### 5. Transformer Model (Encoder-only)
+
+Trains a basic Transformer encoder model (attention-based) on text:
+
+```bash
+uv run python src/training/train_transformer_model.py --use-neighborhood-overview
+```
+
+### 6. Interpretability (Post-training)
+
+Runs residual and lexical analysis without retraining, and exports insights:
+
+```bash
+uv run python src/visualization/interpretability.py
+```
+
 ## Results
 
 All metrics and artifacts are saved to `data/results/london/`:
 
-| File                           | Content                        |
-| ------------------------------ | ------------------------------ |
-| `baseline_metrics.json`        | OLS & RF test metrics          |
-| `text_model/test_metrics.json` | LSTM test metrics              |
-| `hybrid/test_metrics.json`     | Hybrid test metrics            |
-| `comparison_chart.png`         | R² bar chart across all models |
+| File                                  | Content                        |
+| ------------------------------------- | ------------------------------ |
+| `baseline_metrics.json`               | OLS & RF test metrics          |
+| `text_model/test_metrics.json`        | LSTM test metrics              |
+| `hybrid/test_metrics.json`            | Hybrid test metrics            |
+| `transformer_model/test_metrics.json` | Transformer test metrics       |
+| `comparison_chart.png`                | R² bar chart across all models |
+
+Interpretability outputs are saved in `data/results/london/interpretability/`:
+
+| File                                  | Content                                                        |
+| ------------------------------------- | -------------------------------------------------------------- |
+| `test_residuals.csv`                  | Residuals of the hybrid model on test set                      |
+| `top_hybrid_vs_baseline_listings.csv` | Listings where hybrid has the strongest gain proxy vs baseline |
+| `top_words_high_price.csv`            | Top lexical markers associated with expensive listings         |
+| `top_words_low_price.csv`             | Top lexical markers associated with cheaper listings           |
+| `word_price_signals.png`              | Bar chart of high-price vs low-price lexical signals           |
+| `interpretability_summary.json`       | Summary metrics of interpretability analysis                   |

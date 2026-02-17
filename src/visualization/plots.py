@@ -41,17 +41,20 @@ def save_training_curves(
     plt.close()
 
 
-def save_comparison_chart(city: str, hybrid_r2: float) -> None:
-    """Generate a bar chart comparing R² across all models.
+def save_comparison_chart(city: str, hybrid_r2: float | None = None) -> None:
+    """Generate a bar chart comparing R² across available models.
 
-    Reads previously saved baseline and text-model metrics from disk.
+    Reads previously saved metrics from disk and includes optional models
+    when artifacts are available.
 
     Args:
         city: City identifier (used to locate result files).
-        hybrid_r2: R² score of the hybrid model on the test set.
+        hybrid_r2: Optional in-memory R² score for the hybrid model.
     """
     baseline_path = RESULTS_DIR / city / "baseline_metrics.json"
     text_model_path = RESULTS_DIR / city / "text_model" / "test_metrics.json"
+    hybrid_path = RESULTS_DIR / city / "hybrid" / "test_metrics.json"
+    transformer_path = RESULTS_DIR / city / "transformer_model" / "test_metrics.json"
 
     if not baseline_path.exists() or not text_model_path.exists():
         print("Comparison files missing – chart not generated.")
@@ -60,11 +63,24 @@ def save_comparison_chart(city: str, hybrid_r2: float) -> None:
     baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
     text_data = json.loads(text_model_path.read_text(encoding="utf-8"))
 
-    baseline_r2 = baseline_data["models"]["random_forest"]["r2"]
-    text_r2 = text_data["metrics"]["r2"]
+    labels = ["Baseline RF", "Text Model"]
+    values = [
+        baseline_data["models"]["random_forest"]["r2"],
+        text_data["metrics"]["r2"],
+    ]
 
-    labels = ["Baseline RF", "Text Model", "Hybrid"]
-    values = [baseline_r2, text_r2, hybrid_r2]
+    if hybrid_r2 is None and hybrid_path.exists():
+        hybrid_data = json.loads(hybrid_path.read_text(encoding="utf-8"))
+        hybrid_r2 = hybrid_data["metrics"]["r2"]
+
+    if hybrid_r2 is not None:
+        labels.append("Hybrid")
+        values.append(hybrid_r2)
+
+    if transformer_path.exists():
+        transformer_data = json.loads(transformer_path.read_text(encoding="utf-8"))
+        labels.append("Transformer")
+        values.append(transformer_data["metrics"]["r2"])
 
     output_path = RESULTS_DIR / city / "comparison_chart.png"
     output_path.parent.mkdir(parents=True, exist_ok=True)

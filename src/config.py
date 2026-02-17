@@ -93,3 +93,11 @@ HYBRID_TABULAR_HIDDEN_DIM: int = 32
 HYBRID_FUSION_HIDDEN_DIM: int = 64
 HYBRID_MAX_EPOCHS: int = 15
 HYBRID_PATIENCE: int = 3
+
+# ---------------------------------------------------------------------------
+# Transformer model defaults
+# ---------------------------------------------------------------------------
+TRANSFORMER_HEADS: int = 4
+TRANSFORMER_LAYERS: int = 2
+TRANSFORMER_DROPOUT: float = 0.1
+TRANSFORMER_HIDDEN_DIM: int = 64
