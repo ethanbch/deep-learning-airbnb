@@ -1,0 +1,11 @@
+feature,importance
+cat__room_type_Entire home/apt,0.42263773344605415
+num__latitude,0.172941505790981
+num__longitude,0.1713457314875342
+num__bathrooms,0.1393749930477722
+num__accommodates,0.04964633687309359
+num__bedrooms,0.02348279184175912
+num__beds,0.013187631319323078
+cat__room_type_Private room,0.0038373937740104726
+cat__room_type_Hotel room,0.0029485706444047502
+cat__room_type_Shared room,0.0005973117750673742

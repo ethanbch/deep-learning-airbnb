@@ -44,10 +44,15 @@ from features.text import (  # noqa: E402
 from models.text_predictor import TextPricePredictor  # noqa: E402
 from training.utils import (  # noqa: E402
     TrainingHistory,
+    append_epoch_metrics,
+    build_checkpoint_payload,
+    clear_device_cache,
     combine_text_columns,
     detect_device,
     evaluate_metrics,
+    initialize_epoch_metrics_log,
     load_splits,
+    maybe_resume_checkpoint,
     set_seed,
 )
 from visualization.plots import save_training_curves  # noqa: E402
@@ -197,6 +202,7 @@ def train_text_model(
     patience: int,
     seed: int,
     device_preference: str,
+    resume_from_checkpoint: bool,
 ) -> None:
     """Train, evaluate and save the text-only model.
 
@@ -264,11 +270,13 @@ def train_text_model(
     model_path = results_dir / "best_model.pth"
     vocab_path = results_dir / "vocab.json"
     metrics_path = results_dir / "test_metrics.json"
+    epoch_metrics_path = results_dir / "epoch_metrics.jsonl"
     curve_path = results_dir / "training_curves.png"
 
     # -- training loop --------------------------------------------------------
     best_val_loss = float("inf")
     patience_counter = 0
+    start_epoch = 1
     history = TrainingHistory()
 
     print(f"Device: {device}")
@@ -278,7 +286,35 @@ def train_text_model(
         print("  Backend: Apple Metal Performance Shaders (MPS)")
     print(f"Vocabulary size: {len(vocabulary):,}")
 
-    for epoch in range(1, max_epochs + 1):
+    checkpoint_state = maybe_resume_checkpoint(
+        model=model,
+        optimizer=optimizer,
+        checkpoint_path=model_path,
+        device=device,
+        resume_from_checkpoint=resume_from_checkpoint,
+        initial_best_val_loss=best_val_loss,
+    )
+    best_val_loss = checkpoint_state.best_val_loss
+    patience_counter = checkpoint_state.patience_counter
+    start_epoch = checkpoint_state.start_epoch
+    initialize_epoch_metrics_log(
+        epoch_metrics_path,
+        resume_from_existing_log=checkpoint_state.resumed,
+    )
+
+    model_config = {
+        "vocab_size": len(vocabulary),
+        "embedding_dim": embedding_dim,
+        "hidden_dim": hidden_dim,
+        "num_layers": num_layers,
+        "dropout": dropout,
+        "pad_index": vocabulary.pad_index,
+        "rnn_type": rnn_type,
+    }
+
+    for epoch in range(start_epoch, max_epochs + 1):
+        should_stop = False
+
         train_loss = _run_epoch(
             model,
             train_loader,
@@ -298,6 +334,7 @@ def train_text_model(
 
         history.train_losses.append(train_loss)
         history.val_losses.append(val_loss)
+        clear_device_cache(device)
 
         print(
             f"Epoch {epoch:03d} | Train Loss: {train_loss:.6f} "
@@ -308,43 +345,50 @@ def train_text_model(
             best_val_loss = val_loss
             patience_counter = 0
             torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "model_config": {
-                        "vocab_size": len(vocabulary),
-                        "embedding_dim": embedding_dim,
-                        "hidden_dim": hidden_dim,
-                        "num_layers": num_layers,
-                        "dropout": dropout,
-                        "pad_index": vocabulary.pad_index,
-                        "rnn_type": rnn_type,
-                    },
-                },
+                build_checkpoint_payload(
+                    model=model,
+                    model_config=model_config,
+                    optimizer=optimizer,
+                    best_val_loss=best_val_loss,
+                    epoch=epoch,
+                    patience_counter=patience_counter,
+                ),
                 model_path,
             )
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"Early stopping triggered (patience={patience}).")
-                break
+                should_stop = True
+
+        append_epoch_metrics(
+            metrics_log_path=epoch_metrics_path,
+            epoch=epoch,
+            train_loss=train_loss,
+            val_loss=val_loss,
+            best_val_loss=best_val_loss,
+            patience_counter=patience_counter,
+        )
+        save_training_curves(
+            history.train_losses,
+            history.val_losses,
+            curve_path,
+            title="Text Model Training Curves",
+        )
+
+        if should_stop:
+            print(f"Early stopping triggered (patience={patience}).")
+            break
 
     # -- save vocabulary ------------------------------------------------------
     with vocab_path.open("w", encoding="utf-8") as f:
         json.dump(vocabulary.to_dict(), f, ensure_ascii=False)
-
-    # -- save curves ----------------------------------------------------------
-    save_training_curves(
-        history.train_losses,
-        history.val_losses,
-        curve_path,
-        title="Text Model Training Curves",
-    )
 
     # -- test evaluation ------------------------------------------------------
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     y_true, y_pred = _predict(model, test_loader, device)
+    clear_device_cache(device, aggressive=True)
     test_metrics = evaluate_metrics(y_true, y_pred)
 
     report = {
@@ -399,6 +443,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="auto: CUDA > MPS > CPU",
     )
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Resume from existing checkpoint when available.",
+    )
     return parser
 
 
@@ -420,4 +470,5 @@ if __name__ == "__main__":
         patience=args.patience,
         seed=args.seed,
         device_preference=args.device,
+        resume_from_checkpoint=args.resume,
     )
