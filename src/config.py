@@ -71,7 +71,7 @@ MAX_SEQUENCE_LENGTH: int = 120
 # ---------------------------------------------------------------------------
 # Training hyperparameters (shared defaults)
 # ---------------------------------------------------------------------------
-BATCH_SIZE: int = 32
+BATCH_SIZE: int = 64
 LEARNING_RATE: float = 1e-3
 DROPOUT: float = 0.2
 EMBEDDING_DIM: int = 100
