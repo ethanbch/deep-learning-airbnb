@@ -76,7 +76,11 @@ def save_training_curves(
     plt.close()
 
 
-def save_comparison_chart(city: str, hybrid_r2: float | None = None) -> None:
+def save_comparison_chart(
+    city: str,
+    hybrid_r2: float | None = None,
+    hybrid_transformer_r2: float | None = None,
+) -> None:
     """Generate a bar chart comparing R² across available models.
 
     Reads previously saved metrics from disk and includes optional models
@@ -85,11 +89,15 @@ def save_comparison_chart(city: str, hybrid_r2: float | None = None) -> None:
     Args:
         city: City identifier (used to locate result files).
         hybrid_r2: Optional in-memory R² score for the hybrid model.
+        hybrid_transformer_r2: Optional in-memory R² for hybrid-transformer model.
     """
     baseline_path = RESULTS_DIR / city / "baseline_metrics.json"
     text_model_path = RESULTS_DIR / city / "text_model" / "test_metrics.json"
     hybrid_path = RESULTS_DIR / city / "hybrid" / "test_metrics.json"
     transformer_path = RESULTS_DIR / city / "transformer_model" / "test_metrics.json"
+    hybrid_transformer_path = (
+        RESULTS_DIR / city / "hybrid_transformer" / "test_metrics.json"
+    )
 
     if not baseline_path.exists() or not text_model_path.exists():
         print("Comparison files missing – chart not generated.")
@@ -116,6 +124,16 @@ def save_comparison_chart(city: str, hybrid_r2: float | None = None) -> None:
         transformer_data = json.loads(transformer_path.read_text(encoding="utf-8"))
         labels.append("Transformer")
         values.append(transformer_data["metrics"]["r2"])
+
+    if hybrid_transformer_r2 is None and hybrid_transformer_path.exists():
+        hybrid_transformer_data = json.loads(
+            hybrid_transformer_path.read_text(encoding="utf-8")
+        )
+        hybrid_transformer_r2 = hybrid_transformer_data["metrics"]["r2"]
+
+    if hybrid_transformer_r2 is not None:
+        labels.append("Hybrid Transformer")
+        values.append(hybrid_transformer_r2)
 
     output_path = RESULTS_DIR / city / "comparison_chart.png"
     output_path.parent.mkdir(parents=True, exist_ok=True)

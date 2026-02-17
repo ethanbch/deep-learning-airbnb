@@ -1,0 +1,12 @@
+{
+  "city": "london",
+  "target": "log_price",
+  "text_source": "description + neighborhood_overview",
+  "model": "hybrid_transformer",
+  "best_val_loss": 0.17264403552851743,
+  "metrics": {
+    "rmse": 0.41673632499203334,
+    "mae": 0.30881159011270126,
+    "r2": 0.6972413718377067
+  }
+}

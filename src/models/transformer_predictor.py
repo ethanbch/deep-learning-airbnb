@@ -71,6 +71,7 @@ class TransformerPricePredictor(nn.Module):
         self.encoder = nn.TransformerEncoder(
             encoder_layer=encoder_layer,
             num_layers=num_layers,
+            enable_nested_tensor=False,
         )
         self.regressor = nn.Linear(embedding_dim, 1)
 

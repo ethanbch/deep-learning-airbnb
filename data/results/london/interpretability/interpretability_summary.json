@@ -1,0 +1,17 @@
+{
+  "city": "london",
+  "n_test_rows": 9211,
+  "models_evaluated": [
+    "hybrid_transformer",
+    "hybrid",
+    "transformer_model",
+    "text_model"
+  ],
+  "best_model": "hybrid_transformer",
+  "best_model_rmse": 0.4167363366848939,
+  "best_model_mae": 0.30881160497665405,
+  "baseline_rmse_proxy": 0.40756094031972245,
+  "top_n_words": 20,
+  "top_n_residuals": 50,
+  "word_chart": "/Users/ethan.bcht/vs/deep-learning-airbnb/data/results/london/interpretability/word_price_signals.png"
+}

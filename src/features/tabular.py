@@ -108,5 +108,6 @@ def collate_hybrid_batch(
     """
     text_batch = [(token_ids, target) for token_ids, _, target in batch]
     input_ids, lengths, targets = collate_text_batch(text_batch, pad_index=pad_index)
-    tabular_tensor = torch.tensor([row for _, row, _ in batch], dtype=torch.float32)
+    tabular_array = np.asarray([row for _, row, _ in batch], dtype=np.float32)
+    tabular_tensor = torch.from_numpy(tabular_array)
     return input_ids, lengths, tabular_tensor, targets

@@ -44,11 +44,13 @@ def regenerate_training_curves(city: str, model: str) -> Path:
         "text": "text_model",
         "hybrid": "hybrid",
         "transformer": "transformer_model",
+        "hybrid-transformer": "hybrid_transformer",
     }
     titles = {
         "text": "Text Model Training Curves",
         "hybrid": "Hybrid Model Training Curves",
         "transformer": "Transformer Model Training Curves",
+        "hybrid-transformer": "Hybrid Transformer Training Curves",
     }
 
     if model not in model_folders:
@@ -77,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--city", default=DEFAULT_CITY)
     parser.add_argument(
         "--model",
-        choices=["text", "hybrid", "transformer"],
+        choices=["text", "hybrid", "transformer", "hybrid-transformer"],
         default="text",
         help="Model family to regenerate curve for.",
     )
