@@ -105,7 +105,3 @@ All metrics and artifacts are saved to `data/results/london/`:
 | `text_model/test_metrics.json` | LSTM test metrics              |
 | `hybrid/test_metrics.json`     | Hybrid test metrics            |
 | `comparison_chart.png`         | R² bar chart across all models |
-
-## License
-
-This project is for academic purposes only.
