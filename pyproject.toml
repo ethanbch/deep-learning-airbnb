@@ -1,0 +1,18 @@
+[project]
+name = "deep-learning-airbnb"
+version = "0.1.0"
+description = "Predicting Airbnb listing prices with deep learning (tabular + NLP)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+	"numpy<2; platform_system == 'Darwin' and platform_machine == 'x86_64'",
+	"numpy>=2.2.0; platform_system != 'Darwin' or platform_machine != 'x86_64'",
+	"pandas>=2.2.0",
+	"requests>=2.32.0",
+	"scikit-learn>=1.5.0",
+	"torch==2.2.2; platform_system == 'Darwin' and platform_machine == 'x86_64'",
+	"torch>=2.5.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+	"torch>=2.5.0; platform_system != 'Darwin'",
+	"matplotlib>=3.9.0",
+	"tqdm>=4.67.0",
+]
