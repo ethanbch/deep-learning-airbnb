@@ -1,15 +1,16 @@
 # Predicting Airbnb Listing Prices with Deep Learning
 
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C?logo=pytorch&logoColor=white)
+![Reproducible](https://img.shields.io/badge/Reproducible-uv%20workflow-4B5563)
+![License](https://img.shields.io/badge/License-MIT-green)
+
 > **Research question:** Can Natural Language Processing on listing descriptions
 > improve Airbnb price predictions compared to tabular features alone?
 
-## Authors
-
-- Ethan B. _(add co-authors here)_
-
 ## Overview
 
-This project builds and compares five progressively richer models for
+This project builds and compares six models across four families for
 predicting the **log-price** of Airbnb listings in London:
 
 | Model                  | Features                                    | Architecture                             |
@@ -20,7 +21,8 @@ predicting the **log-price** of Airbnb listings in London:
 | **Transformer**        | Text (description + neighbourhood overview) | Embedding → Transformer Encoder → Linear |
 | **Hybrid Transformer** | Tabular + Text                              | Transformer Encoder + MLP → Late fusion  |
 
-Data is sourced from [Inside Airbnb](http://insideairbnb.com/).
+Data is sourced from [Inside Airbnb](http://insideairbnb.com/) and includes
+61,406 cleaned London listings after preprocessing.
 
 ## Project Structure
 
@@ -132,6 +134,48 @@ uv run python src/visualization/poster_plots.py --use-neighborhood-overview
 
 ## Results
 
+### Quantitative Benchmark (Test Set)
+
+| Model                               |       RMSE |        MAE |         R² |
+| ----------------------------------- | ---------: | ---------: | ---------: |
+| OLS (baseline)                      |     0.5144 |     0.3889 |     0.5387 |
+| Random Forest                       | **0.4076** | **0.2931** | **0.7104** |
+| LSTM (text only)                    |     0.5433 |     0.3981 |     0.4854 |
+| Hybrid LSTM (text + tabular)        |     0.4335 |     0.3186 |     0.6723 |
+| Transformer (text only)             |     0.5151 |     0.3783 |     0.5375 |
+| Hybrid Transformer (text + tabular) |     0.4167 |     0.3088 |     0.6972 |
+
+Random Forest is the strongest overall model on this dataset, while the
+Hybrid Transformer is the strongest deep-learning model.
+
+### Visual Results
+
+![Figure 1 - Model benchmark](assets/figure_1_methodological_benchmark.png)
+_Figure 1 — R² comparison across all model families._
+
+![Figure 2 - Best model fit](assets/figure_2_best_model_fit.png)
+_Figure 2 — Predicted vs actual log-price for the Hybrid Transformer._
+
+![Figure 3 - Residual robustness](assets/figure_3_residual_robustness.png)
+_Figure 3 — Residual distribution for robustness analysis._
+
+![Figure 4 - ROC curve](assets/roc_curve.png)
+_Figure 4 — ROC comparison across models for high-price classification (quantile threshold)._
+
+### Key Findings
+
+- Text alone is weaker than strong tabular baselines on this dataset.
+- Fusion helps: combining text and tabular features yields large gains over text-only models.
+- Attention-based fusion (Hybrid Transformer) outperforms the LSTM-based hybrid.
+- Lexical interpretability highlights clear high-price and low-price word signals.
+- Current experiments are London-only; cross-city generalization remains future work.
+
+## Future Work
+
+- Cross-city generalization (Paris, NYC, Berlin).
+- Fine-tuned BERT encoder instead of custom embeddings.
+- Richer geospatial features (neighbourhood-level price heatmaps).
+
 All metrics and artifacts are saved to `data/results/london/`:
 
 | File                                   | Content                         |
@@ -150,6 +194,7 @@ Poster figures are saved in `data/results/london/plots/`:
 | `figure_1_methodological_benchmark.png` | Benchmark bar chart (all model families)             |
 | `figure_2_best_model_fit.png`           | Scatter plot: real vs predicted (Hybrid Transformer) |
 | `figure_3_residual_robustness.png`      | Residual histogram + KDE robustness analysis         |
+| `roc_curve.png`                         | ROC comparison for high-price classification         |
 
 Interpretability outputs are saved in `data/results/london/interpretability/`:
 
