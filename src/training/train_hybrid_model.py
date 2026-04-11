@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 import sys
 from pathlib import Path
@@ -23,25 +24,30 @@ from config import (  # noqa: E402
     DEFAULT_CITY,
     DROPOUT,
     EMBEDDING_DIM,
+    GRAD_CLIP_MAX_NORM,
     HYBRID_FUSION_HIDDEN_DIM,
     HYBRID_MAX_EPOCHS,
     HYBRID_PATIENCE,
     HYBRID_TABULAR_HIDDEN_DIM,
     HYBRID_TEXT_HIDDEN_DIM,
     LEARNING_RATE,
+    LR_SCHEDULER_FACTOR,
+    LR_SCHEDULER_PATIENCE,
     MAX_SEQUENCE_LENGTH,
+    MAX_VOCAB_SIZE,
     NUM_RNN_LAYERS,
     RANDOM_SEED,
     RESULTS_DIR,
     RNN_TYPE,
     TARGET_COLUMN,
+    WEIGHT_DECAY,
 )
 from features.tabular import (  # noqa: E402
     HybridDataset,
     collate_hybrid_batch,
     preprocess_tabular_features,
 )
-from features.text import Vocabulary  # noqa: E402
+from features.text import Vocabulary, build_vocabulary  # noqa: E402
 from models.hybrid_predictor import HybridPredictor  # noqa: E402
 from training.utils import (  # noqa: E402
     TrainingHistory,
@@ -62,29 +68,13 @@ from visualization.plots import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+NUM_DATALOADER_WORKERS: int = 4
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _load_vocabulary(city: str) -> Vocabulary:
-    """Load the vocabulary saved by the text model training.
-
-    Args:
-        city: City identifier.
-
-    Returns:
-        A :class:`~features.text.Vocabulary` instance.
-
-    Raises:
-        FileNotFoundError: If the vocabulary file does not exist.
-    """
-    vocab_path = RESULTS_DIR / city / "text_model" / "vocab.json"
-    if not vocab_path.exists():
-        raise FileNotFoundError(
-            f"Vocabulary not found: {vocab_path}. " "Run train_text_model.py first."
-        )
-    with vocab_path.open("r", encoding="utf-8") as f:
-        return Vocabulary.from_dict(json.load(f))
 
 
 def _make_hybrid_loader(
@@ -95,21 +85,9 @@ def _make_hybrid_loader(
     max_sequence_length: int,
     batch_size: int,
     shuffle: bool,
+    use_cuda: bool = False,
 ) -> DataLoader:
-    """Create a DataLoader for the hybrid model.
-
-    Args:
-        texts: Raw text strings.
-        tabular_features: Pre-processed numeric feature matrix.
-        targets: Regression target values.
-        vocabulary: Fitted vocabulary.
-        max_sequence_length: Token truncation limit.
-        batch_size: Mini-batch size.
-        shuffle: Whether to shuffle each epoch.
-
-    Returns:
-        A configured :class:`DataLoader`.
-    """
+    """Create a DataLoader for the hybrid model."""
     dataset = HybridDataset(
         texts=texts,
         tabular_features=tabular_features,
@@ -121,9 +99,9 @@ def _make_hybrid_loader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        collate_fn=lambda batch: collate_hybrid_batch(
-            batch, pad_index=vocabulary.pad_index
-        ),
+        num_workers=NUM_DATALOADER_WORKERS,
+        pin_memory=use_cuda,
+        collate_fn=partial(collate_hybrid_batch, pad_index=vocabulary.pad_index),
     )
 
 
@@ -139,25 +117,18 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
     label: str,
+    grad_clip_max_norm: float | None = None,
 ) -> float:
     """Run one training or validation epoch.
 
-    Args:
-        model: The hybrid prediction model.
-        data_loader: Batched data source.
-        loss_fn: Loss function (e.g. MSELoss).
-        optimizer: Optimiser (``None`` for evaluation mode).
-        device: Target compute device.
-        label: Progress-bar description.
-
     Returns:
-        Mean loss over all batches.
+        Mean loss over all **samples** (weighted by batch size).
     """
     is_training = optimizer is not None
     model.train() if is_training else model.eval()
 
     total_loss = 0.0
-    num_batches = 0
+    total_samples = 0
 
     for input_ids, lengths, tabular, targets in tqdm(
         data_loader, desc=label, leave=False
@@ -166,6 +137,7 @@ def _run_epoch(
         lengths = lengths.to(device)
         tabular = tabular.to(device)
         targets = targets.to(device)
+        batch_size = targets.size(0)
 
         with torch.set_grad_enabled(is_training):
             predictions = model(
@@ -175,12 +147,16 @@ def _run_epoch(
             if is_training:
                 optimizer.zero_grad()
                 loss.backward()
+                if grad_clip_max_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), grad_clip_max_norm
+                    )
                 optimizer.step()
 
-        total_loss += float(loss.item())
-        num_batches += 1
+        total_loss += float(loss.item()) * batch_size
+        total_samples += batch_size
 
-    return total_loss / max(1, num_batches)
+    return total_loss / max(1, total_samples)
 
 
 def _predict(
@@ -188,16 +164,7 @@ def _predict(
     data_loader: DataLoader,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Generate predictions for a full DataLoader.
-
-    Args:
-        model: Trained hybrid model.
-        data_loader: Evaluation data source.
-        device: Compute device.
-
-    Returns:
-        Tuple of ``(y_true, y_pred)`` numpy arrays.
-    """
+    """Generate predictions for a full DataLoader."""
     model.eval()
     all_targets: list[float] = []
     all_predictions: list[float] = []
@@ -224,6 +191,7 @@ def _predict(
 def train_hybrid_model(
     city: str,
     use_neighborhood_overview: bool,
+    max_vocab_size: int,
     max_sequence_length: int,
     embedding_dim: int,
     text_hidden_dim: int,
@@ -233,42 +201,29 @@ def train_hybrid_model(
     dropout: float,
     rnn_type: str,
     learning_rate: float,
+    weight_decay: float,
     batch_size: int,
     max_epochs: int,
     patience: int,
+    grad_clip_max_norm: float,
+    lr_scheduler_factor: float,
+    lr_scheduler_patience: int,
     seed: int,
     device_preference: str,
     resume_from_checkpoint: bool,
 ) -> None:
-    """Train, evaluate and save the hybrid model.
-
-    Args:
-        city: City identifier.
-        use_neighborhood_overview: Concatenate overview text to description.
-        max_sequence_length: Token truncation limit.
-        embedding_dim: Embedding vector size.
-        text_hidden_dim: RNN hidden units for the text encoder.
-        tabular_hidden_dim: MLP hidden units for the tabular encoder.
-        fusion_hidden_dim: Hidden units in the fusion layer.
-        num_layers: Stacked RNN layers.
-        dropout: Dropout probability.
-        rnn_type: ``"lstm"`` or ``"gru"``.
-        learning_rate: Adam learning rate.
-        batch_size: Mini-batch size.
-        max_epochs: Maximum training epochs.
-        patience: Early-stopping patience (epochs).
-        seed: Random seed.
-        device_preference: ``"auto"``, ``"cuda"``, ``"mps"`` or ``"cpu"``.
-    """
+    """Train, evaluate and save the hybrid model."""
     set_seed(seed)
 
     # -- data -----------------------------------------------------------------
     train_df, val_df, test_df = load_splits(city)
-    vocabulary = _load_vocabulary(city)
 
     train_texts = combine_text_columns(train_df, use_neighborhood_overview).tolist()
     val_texts = combine_text_columns(val_df, use_neighborhood_overview).tolist()
     test_texts = combine_text_columns(test_df, use_neighborhood_overview).tolist()
+
+    # Build vocabulary on training texts (independent of text-only model)
+    vocabulary = build_vocabulary(texts=train_texts, max_vocab_size=max_vocab_size)
 
     x_train, x_val, x_test, scaler, tabular_columns = preprocess_tabular_features(
         train_df, val_df, test_df
@@ -278,36 +233,23 @@ def train_hybrid_model(
     y_val = val_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
     y_test = test_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
 
-    train_loader = _make_hybrid_loader(
-        train_texts,
-        x_train,
-        y_train,
-        vocabulary,
-        max_sequence_length,
-        batch_size,
-        shuffle=True,
-    )
-    val_loader = _make_hybrid_loader(
-        val_texts,
-        x_val,
-        y_val,
-        vocabulary,
-        max_sequence_length,
-        batch_size,
-        shuffle=False,
-    )
-    test_loader = _make_hybrid_loader(
-        test_texts,
-        x_test,
-        y_test,
-        vocabulary,
-        max_sequence_length,
-        batch_size,
-        shuffle=False,
-    )
-
     # -- model ----------------------------------------------------------------
     device = detect_device(device_preference)
+    use_cuda = device.type == "cuda"
+
+    train_loader = _make_hybrid_loader(
+        train_texts, x_train, y_train, vocabulary, max_sequence_length,
+        batch_size, shuffle=True, use_cuda=use_cuda,
+    )
+    val_loader = _make_hybrid_loader(
+        val_texts, x_val, y_val, vocabulary, max_sequence_length,
+        batch_size, shuffle=False, use_cuda=use_cuda,
+    )
+    test_loader = _make_hybrid_loader(
+        test_texts, x_test, y_test, vocabulary, max_sequence_length,
+        batch_size, shuffle=False, use_cuda=use_cuda,
+    )
+
     model = HybridPredictor(
         vocab_size=len(vocabulary),
         pad_index=vocabulary.pad_index,
@@ -322,13 +264,20 @@ def train_hybrid_model(
     ).to(device)
 
     loss_fn = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=lr_scheduler_factor,
+        patience=lr_scheduler_patience, verbose=True,
+    )
 
     # -- output paths ---------------------------------------------------------
     results_dir = RESULTS_DIR / city / "hybrid"
     results_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = results_dir / "best_model.pth"
+    vocab_path = results_dir / "vocab.json"
     metrics_path = results_dir / "test_metrics.json"
     epoch_metrics_path = results_dir / "epoch_metrics.jsonl"
     curve_path = results_dir / "training_curves.png"
@@ -341,7 +290,8 @@ def train_hybrid_model(
     history = TrainingHistory()
 
     print(f"Device: {device}")
-    print(f"Tabular features: {tabular_columns}")
+    print(f"Vocabulary size: {len(vocabulary):,}")
+    print(f"Tabular features ({x_train.shape[1]}): {tabular_columns}")
 
     checkpoint_state = maybe_resume_checkpoint(
         model=model,
@@ -375,29 +325,24 @@ def train_hybrid_model(
     for epoch in range(start_epoch, max_epochs + 1):
         should_stop = False
         train_loss = _run_epoch(
-            model,
-            train_loader,
-            loss_fn,
-            optimizer,
-            device,
+            model, train_loader, loss_fn, optimizer, device,
             label=f"Epoch {epoch}/{max_epochs} [train]",
+            grad_clip_max_norm=grad_clip_max_norm,
         )
         val_loss = _run_epoch(
-            model,
-            val_loader,
-            loss_fn,
-            None,
-            device,
+            model, val_loader, loss_fn, None, device,
             label=f"Epoch {epoch}/{max_epochs} [val]",
         )
 
         history.train_losses.append(train_loss)
         history.val_losses.append(val_loss)
         clear_device_cache(device)
+        scheduler.step(val_loss)
 
+        current_lr = optimizer.param_groups[0]["lr"]
         print(
             f"Epoch {epoch:03d} | Train Loss: {train_loss:.6f} "
-            f"| Val Loss: {val_loss:.6f}"
+            f"| Val Loss: {val_loss:.6f} | LR: {current_lr:.2e}"
         )
 
         if val_loss < best_val_loss:
@@ -438,8 +383,11 @@ def train_hybrid_model(
             print(f"Early stopping triggered (patience={patience}).")
             break
 
-    # -- save scaler ----------------------------------------------------------
+    # -- save vocabulary ------------------------------------------------------
+    with vocab_path.open("w", encoding="utf-8") as f:
+        json.dump(vocabulary.to_dict(), f, ensure_ascii=False)
 
+    # -- save scaler ----------------------------------------------------------
     scaler_mean = np.asarray(scaler.mean_ if scaler.mean_ is not None else [])
     scaler_scale = np.asarray(scaler.scale_ if scaler.scale_ is not None else [])
     scaler_payload = {
@@ -491,10 +439,10 @@ def train_hybrid_model(
     print("\n=== Hybrid Model (test set) ===")
     print(f"  RMSE: {metrics['rmse']:.4f}")
     print(f"  MAE:  {metrics['mae']:.4f}")
-    print(f"  R²:   {metrics['r2']:.4f}")
+    print(f"  R2:   {metrics['r2']:.4f}")
 
     if baseline_r2 is not None and text_r2 is not None:
-        print("\nR² comparison (test):")
+        print("\nR2 comparison (test):")
         print(f"  Baseline RF:  {baseline_r2:.4f}")
         print(f"  Text Model:   {text_r2:.4f}")
         print(f"  Hybrid:       {metrics['r2']:.4f}")
@@ -514,6 +462,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--city", default=DEFAULT_CITY)
     parser.add_argument("--use-neighborhood-overview", action="store_true")
+    parser.add_argument("--max-vocab-size", type=int, default=MAX_VOCAB_SIZE)
     parser.add_argument("--max-sequence-length", type=int, default=MAX_SEQUENCE_LENGTH)
     parser.add_argument("--embedding-dim", type=int, default=EMBEDDING_DIM)
     parser.add_argument("--text-hidden-dim", type=int, default=HYBRID_TEXT_HIDDEN_DIM)
@@ -527,9 +476,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dropout", type=float, default=DROPOUT)
     parser.add_argument("--rnn-type", choices=["lstm", "gru"], default=RNN_TYPE)
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE)
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--max-epochs", type=int, default=HYBRID_MAX_EPOCHS)
     parser.add_argument("--patience", type=int, default=HYBRID_PATIENCE)
+    parser.add_argument("--grad-clip", type=float, default=GRAD_CLIP_MAX_NORM)
+    parser.add_argument("--lr-scheduler-factor", type=float, default=LR_SCHEDULER_FACTOR)
+    parser.add_argument("--lr-scheduler-patience", type=int, default=LR_SCHEDULER_PATIENCE)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     parser.add_argument(
         "--device",
@@ -551,6 +504,7 @@ if __name__ == "__main__":
     train_hybrid_model(
         city=args.city,
         use_neighborhood_overview=args.use_neighborhood_overview,
+        max_vocab_size=args.max_vocab_size,
         max_sequence_length=args.max_sequence_length,
         embedding_dim=args.embedding_dim,
         text_hidden_dim=args.text_hidden_dim,
@@ -560,9 +514,13 @@ if __name__ == "__main__":
         dropout=args.dropout,
         rnn_type=args.rnn_type,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
         batch_size=args.batch_size,
         max_epochs=args.max_epochs,
         patience=args.patience,
+        grad_clip_max_norm=args.grad_clip,
+        lr_scheduler_factor=args.lr_scheduler_factor,
+        lr_scheduler_patience=args.lr_scheduler_patience,
         seed=args.seed,
         device_preference=args.device,
         resume_from_checkpoint=args.resume,

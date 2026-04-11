@@ -1,11 +1,11 @@
 feature,coefficient
-cat__room_type_Shared room,-0.8242706907406758
-cat__room_type_Hotel room,0.7879919657879288
-num__longitude,-0.43900849941126724
-cat__room_type_Entire home/apt,0.3941555125022691
-cat__room_type_Private room,-0.35787678754952135
-num__latitude,0.15951637845026626
-num__bathrooms,0.13117325667228072
-num__accommodates,0.10780732350554627
-num__bedrooms,0.08595167635783696
-num__beds,-0.04971614422432047
+cat__room_type_Hotel room,232948912995.3168
+cat__room_type_Entire home/apt,232948912995.02625
+cat__room_type_Private room,232948912994.27975
+cat__room_type_Shared room,232948912993.76764
+num__longitude,-0.4460868152651745
+num__latitude,0.16291420854697003
+num__bathrooms,0.13030930970059865
+num__accommodates,0.10894566795106221
+num__bedrooms,0.0886137856450373
+num__beds,-0.05234140042916916

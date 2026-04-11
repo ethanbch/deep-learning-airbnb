@@ -11,6 +11,7 @@ from config import (
     MIN_PRICE,
     NUMERIC_COLUMNS,
     RAW_PRICE_COLUMN,
+    SPATIAL_COLUMNS,
     TARGET_COLUMN,
     TEXT_COLUMNS,
 )
@@ -49,6 +50,7 @@ def select_columns(
     selected = [
         RAW_PRICE_COLUMN,
         *NUMERIC_COLUMNS,
+        *SPATIAL_COLUMNS,
         *CATEGORICAL_COLUMNS,
         *TEXT_COLUMNS,
     ]
@@ -82,9 +84,13 @@ def count_missing_text(listings_df: pd.DataFrame) -> pd.Series:
 
 
 def _coerce_numeric_columns(listings_df: pd.DataFrame) -> pd.DataFrame:
-    """Cast numeric columns to proper dtype, setting errors to ``NaN``."""
-    numeric_cols = [col for col in NUMERIC_COLUMNS if col in listings_df.columns]
-    for col in numeric_cols:
+    """Cast numeric and spatial columns to proper dtype, setting errors to ``NaN``."""
+    all_numeric = [
+        col
+        for col in [*NUMERIC_COLUMNS, *SPATIAL_COLUMNS]
+        if col in listings_df.columns
+    ]
+    for col in all_numeric:
         listings_df[col] = pd.to_numeric(listings_df[col], errors="coerce")
     return listings_df
 
@@ -115,6 +121,7 @@ def clean_dataset(
     required_columns = [
         TARGET_COLUMN,
         *NUMERIC_COLUMNS,
+        *SPATIAL_COLUMNS,
         *CATEGORICAL_COLUMNS,
     ]
     available_required = [col for col in required_columns if col in cleaned_df.columns]

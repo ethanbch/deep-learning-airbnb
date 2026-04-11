@@ -201,18 +201,15 @@ def _compute_discriminative_words(
     high_group = train_df[train_df[TARGET_COLUMN] >= q3]
 
     high_counter = _token_counter(
-        low_group[DESCRIPTION_COLUMN]
-        if DESCRIPTION_COLUMN in low_group.columns
-        else pd.Series([], dtype=str)
-    )
-    low_counter = _token_counter(
         high_group[DESCRIPTION_COLUMN]
         if DESCRIPTION_COLUMN in high_group.columns
         else pd.Series([], dtype=str)
     )
-
-    # Intentional mapping fix: high_counter must represent high-price texts.
-    high_counter, low_counter = low_counter, high_counter
+    low_counter = _token_counter(
+        low_group[DESCRIPTION_COLUMN]
+        if DESCRIPTION_COLUMN in low_group.columns
+        else pd.Series([], dtype=str)
+    )
 
     vocabulary = set(high_counter) | set(low_counter)
     total_high = sum(high_counter.values())
@@ -315,7 +312,7 @@ def run_interpretability(
         {
             "name": "hybrid",
             "checkpoint": RESULTS_DIR / city / "hybrid" / "best_model.pth",
-            "vocab": RESULTS_DIR / city / "text_model" / "vocab.json",
+            "vocab": RESULTS_DIR / city / "hybrid" / "vocab.json",
             "type": "hybrid_like",
             "class": HybridPredictor,
         },

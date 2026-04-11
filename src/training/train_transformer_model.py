@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 import sys
 from pathlib import Path
@@ -22,6 +23,8 @@ from config import (  # noqa: E402
     DEFAULT_CITY,
     EMBEDDING_DIM,
     LEARNING_RATE,
+    LR_SCHEDULER_FACTOR,
+    LR_SCHEDULER_PATIENCE,
     MAX_SEQUENCE_LENGTH,
     MAX_VOCAB_SIZE,
     RANDOM_SEED,
@@ -33,6 +36,7 @@ from config import (  # noqa: E402
     TRANSFORMER_HEADS,
     TRANSFORMER_HIDDEN_DIM,
     TRANSFORMER_LAYERS,
+    WEIGHT_DECAY,
 )
 from features.text import (  # noqa: E402
     TextRegressionDataset,
@@ -59,6 +63,9 @@ from visualization.plots import (  # noqa: E402
     save_training_curves,
 )
 
+# ---------------------------------------------------------------------------
+NUM_DATALOADER_WORKERS: int = 4
+
 
 def _make_loader(
     texts: list[str],
@@ -67,6 +74,7 @@ def _make_loader(
     max_sequence_length: int,
     batch_size: int,
     shuffle: bool,
+    use_cuda: bool = False,
 ) -> DataLoader:
     dataset = TextRegressionDataset(
         texts=texts,
@@ -78,9 +86,9 @@ def _make_loader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        collate_fn=lambda batch: collate_text_batch(
-            batch, pad_index=vocabulary.pad_index
-        ),
+        num_workers=NUM_DATALOADER_WORKERS,
+        pin_memory=use_cuda,
+        collate_fn=partial(collate_text_batch, pad_index=vocabulary.pad_index),
     )
 
 
@@ -92,16 +100,18 @@ def _run_epoch(
     device: torch.device,
     label: str,
 ) -> float:
+    """Run one epoch. Returns mean loss over all **samples**."""
     is_training = optimizer is not None
     model.train() if is_training else model.eval()
 
     total_loss = 0.0
-    num_batches = 0
+    total_samples = 0
 
     for input_ids, lengths, targets in tqdm(data_loader, desc=label, leave=False):
         input_ids = input_ids.to(device)
         lengths = lengths.to(device)
         targets = targets.to(device)
+        batch_size = targets.size(0)
 
         with torch.set_grad_enabled(is_training):
             predictions = model(input_ids, lengths)
@@ -111,10 +121,10 @@ def _run_epoch(
                 loss.backward()
                 optimizer.step()
 
-        total_loss += float(loss.item())
-        num_batches += 1
+        total_loss += float(loss.item()) * batch_size
+        total_samples += batch_size
 
-    return total_loss / max(1, num_batches)
+    return total_loss / max(1, total_samples)
 
 
 def _predict(
@@ -148,9 +158,12 @@ def train_transformer_model(
     transformer_layers: int,
     transformer_dropout: float,
     learning_rate: float,
+    weight_decay: float,
     batch_size: int,
     max_epochs: int,
     patience: int,
+    lr_scheduler_factor: float,
+    lr_scheduler_patience: int,
     seed: int,
     device_preference: str,
     resume_from_checkpoint: bool,
@@ -168,32 +181,22 @@ def train_transformer_model(
 
     vocabulary = build_vocabulary(train_texts, max_vocab_size=max_vocab_size)
 
+    device = detect_device(device_preference)
+    use_cuda = device.type == "cuda"
+
     train_loader = _make_loader(
-        train_texts,
-        y_train,
-        vocabulary,
-        max_sequence_length,
-        batch_size,
-        shuffle=True,
+        train_texts, y_train, vocabulary, max_sequence_length, batch_size,
+        shuffle=True, use_cuda=use_cuda,
     )
     val_loader = _make_loader(
-        val_texts,
-        y_val,
-        vocabulary,
-        max_sequence_length,
-        batch_size,
-        shuffle=False,
+        val_texts, y_val, vocabulary, max_sequence_length, batch_size,
+        shuffle=False, use_cuda=use_cuda,
     )
     test_loader = _make_loader(
-        test_texts,
-        y_test,
-        vocabulary,
-        max_sequence_length,
-        batch_size,
-        shuffle=False,
+        test_texts, y_test, vocabulary, max_sequence_length, batch_size,
+        shuffle=False, use_cuda=use_cuda,
     )
 
-    device = detect_device(device_preference)
     model = TransformerPricePredictor(
         vocab_size=len(vocabulary),
         pad_index=vocabulary.pad_index,
@@ -205,8 +208,14 @@ def train_transformer_model(
         max_sequence_length=max_sequence_length,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
     loss_fn = nn.MSELoss()
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=lr_scheduler_factor,
+        patience=lr_scheduler_patience, verbose=True,
+    )
 
     results_dir = RESULTS_DIR / city / "transformer_model"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -255,28 +264,23 @@ def train_transformer_model(
     for epoch in range(start_epoch, max_epochs + 1):
         should_stop = False
         train_loss = _run_epoch(
-            model,
-            train_loader,
-            loss_fn,
-            optimizer,
-            device,
+            model, train_loader, loss_fn, optimizer, device,
             label=f"Epoch {epoch}/{max_epochs} [train]",
         )
         val_loss = _run_epoch(
-            model,
-            val_loader,
-            loss_fn,
-            None,
-            device,
+            model, val_loader, loss_fn, None, device,
             label=f"Epoch {epoch}/{max_epochs} [val]",
         )
 
         history.train_losses.append(train_loss)
         history.val_losses.append(val_loss)
         clear_device_cache(device)
+        scheduler.step(val_loss)
+
+        current_lr = optimizer.param_groups[0]["lr"]
         print(
             f"Epoch {epoch:03d} | Train Loss: {train_loss:.6f} "
-            f"| Val Loss: {val_loss:.6f}"
+            f"| Val Loss: {val_loss:.6f} | LR: {current_lr:.2e}"
         )
 
         if val_loss < best_val_loss:
@@ -346,7 +350,7 @@ def train_transformer_model(
     print("\n=== Transformer Model (test set) ===")
     print(f"  RMSE: {test_metrics['rmse']:.4f}")
     print(f"  MAE:  {test_metrics['mae']:.4f}")
-    print(f"  R²:   {test_metrics['r2']:.4f}")
+    print(f"  R2:   {test_metrics['r2']:.4f}")
     print(f"\nArtifacts saved to {results_dir}/")
 
 
@@ -368,9 +372,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--transformer-dropout", type=float, default=TRANSFORMER_DROPOUT
     )
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE)
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--max-epochs", type=int, default=TEXT_MODEL_MAX_EPOCHS)
     parser.add_argument("--patience", type=int, default=TEXT_MODEL_PATIENCE)
+    parser.add_argument("--lr-scheduler-factor", type=float, default=LR_SCHEDULER_FACTOR)
+    parser.add_argument("--lr-scheduler-patience", type=int, default=LR_SCHEDULER_PATIENCE)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     parser.add_argument(
         "--device",
@@ -399,9 +406,12 @@ if __name__ == "__main__":
         transformer_layers=args.transformer_layers,
         transformer_dropout=args.transformer_dropout,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
         batch_size=args.batch_size,
         max_epochs=args.max_epochs,
         patience=args.patience,
+        lr_scheduler_factor=args.lr_scheduler_factor,
+        lr_scheduler_patience=args.lr_scheduler_patience,
         seed=args.seed,
         device_preference=args.device,
         resume_from_checkpoint=args.resume,

@@ -3,10 +3,10 @@
   "target": "log_price",
   "text_source": "description + neighborhood_overview",
   "model": "transformer",
-  "best_val_loss": 0.26774899009615183,
+  "best_val_loss": 0.264593769541497,
   "metrics": {
-    "rmse": 0.5150636872311163,
-    "mae": 0.37825036548452573,
-    "r2": 0.5375171009966384
+    "rmse": 0.512229706183871,
+    "mae": 0.3765789906761957,
+    "r2": 0.5406144728987046
   }
 }
