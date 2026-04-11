@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 import sys
 from pathlib import Path
@@ -23,7 +24,10 @@ from config import (  # noqa: E402
     DEFAULT_CITY,
     DROPOUT,
     EMBEDDING_DIM,
+    GRAD_CLIP_MAX_NORM,
     LEARNING_RATE,
+    LR_SCHEDULER_FACTOR,
+    LR_SCHEDULER_PATIENCE,
     MAX_SEQUENCE_LENGTH,
     MAX_VOCAB_SIZE,
     NUM_RNN_LAYERS,
@@ -34,6 +38,7 @@ from config import (  # noqa: E402
     TEXT_MODEL_HIDDEN_DIM,
     TEXT_MODEL_MAX_EPOCHS,
     TEXT_MODEL_PATIENCE,
+    WEIGHT_DECAY,
 )
 from features.text import (  # noqa: E402
     TextRegressionDataset,
@@ -58,6 +63,11 @@ from training.utils import (  # noqa: E402
 from visualization.plots import save_training_curves  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+NUM_DATALOADER_WORKERS: int = 4
+
+# ---------------------------------------------------------------------------
 # DataLoader factory
 # ---------------------------------------------------------------------------
 
@@ -69,6 +79,7 @@ def _make_text_loader(
     max_sequence_length: int,
     batch_size: int,
     shuffle: bool,
+    use_cuda: bool = False,
 ) -> DataLoader:
     """Create a DataLoader for the text-only model.
 
@@ -79,6 +90,7 @@ def _make_text_loader(
         max_sequence_length: Token truncation limit.
         batch_size: Mini-batch size.
         shuffle: Whether to shuffle each epoch.
+        use_cuda: Enable pin_memory for CUDA transfers.
 
     Returns:
         A configured :class:`DataLoader`.
@@ -93,9 +105,9 @@ def _make_text_loader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        collate_fn=lambda batch: collate_text_batch(
-            batch, pad_index=vocabulary.pad_index
-        ),
+        num_workers=NUM_DATALOADER_WORKERS,
+        pin_memory=use_cuda,
+        collate_fn=partial(collate_text_batch, pad_index=vocabulary.pad_index),
     )
 
 
@@ -111,6 +123,7 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
     label: str,
+    grad_clip_max_norm: float | None = None,
 ) -> float:
     """Run one training or validation epoch.
 
@@ -121,20 +134,22 @@ def _run_epoch(
         optimizer: Optimiser (``None`` for evaluation mode).
         device: Target compute device.
         label: Progress-bar description.
+        grad_clip_max_norm: Max gradient norm for clipping (RNN stability).
 
     Returns:
-        Mean loss over all batches.
+        Mean loss over all **samples** (weighted by batch size).
     """
     is_training = optimizer is not None
     model.train() if is_training else model.eval()
 
     total_loss = 0.0
-    num_batches = 0
+    total_samples = 0
 
     for input_ids, lengths, targets in tqdm(data_loader, desc=label, leave=False):
         input_ids = input_ids.to(device)
         lengths = lengths.to(device)
         targets = targets.to(device)
+        batch_size = targets.size(0)
 
         with torch.set_grad_enabled(is_training):
             predictions = model(input_ids, lengths)
@@ -143,12 +158,16 @@ def _run_epoch(
             if is_training:
                 optimizer.zero_grad()
                 loss.backward()
+                if grad_clip_max_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), grad_clip_max_norm
+                    )
                 optimizer.step()
 
-        total_loss += float(loss.item())
-        num_batches += 1
+        total_loss += float(loss.item()) * batch_size
+        total_samples += batch_size
 
-    return total_loss / max(1, num_batches)
+    return total_loss / max(1, total_samples)
 
 
 def _predict(
@@ -197,9 +216,13 @@ def train_text_model(
     dropout: float,
     rnn_type: str,
     learning_rate: float,
+    weight_decay: float,
     batch_size: int,
     max_epochs: int,
     patience: int,
+    grad_clip_max_norm: float,
+    lr_scheduler_factor: float,
+    lr_scheduler_patience: int,
     seed: int,
     device_preference: str,
     resume_from_checkpoint: bool,
@@ -217,11 +240,16 @@ def train_text_model(
         dropout: Dropout probability.
         rnn_type: ``"lstm"`` or ``"gru"``.
         learning_rate: Adam learning rate.
+        weight_decay: AdamW weight decay.
         batch_size: Mini-batch size.
         max_epochs: Maximum training epochs.
         patience: Early-stopping patience (epochs).
+        grad_clip_max_norm: Max gradient norm for clipping.
+        lr_scheduler_factor: Factor for ReduceLROnPlateau.
+        lr_scheduler_patience: Patience for ReduceLROnPlateau.
         seed: Random seed.
         device_preference: ``"auto"``, ``"cuda"``, ``"mps"`` or ``"cpu"``.
+        resume_from_checkpoint: Whether to resume from saved checkpoint.
     """
     set_seed(seed)
 
@@ -238,18 +266,23 @@ def train_text_model(
     # IMPORTANT: fit vocabulary only on train set to avoid leakage
     vocabulary = build_vocabulary(texts=train_texts, max_vocab_size=max_vocab_size)
 
-    train_loader = _make_text_loader(
-        train_texts, y_train, vocabulary, max_sequence_length, batch_size, shuffle=True
-    )
-    val_loader = _make_text_loader(
-        val_texts, y_val, vocabulary, max_sequence_length, batch_size, shuffle=False
-    )
-    test_loader = _make_text_loader(
-        test_texts, y_test, vocabulary, max_sequence_length, batch_size, shuffle=False
-    )
-
     # -- model ----------------------------------------------------------------
     device = detect_device(device_preference)
+    use_cuda = device.type == "cuda"
+
+    train_loader = _make_text_loader(
+        train_texts, y_train, vocabulary, max_sequence_length, batch_size,
+        shuffle=True, use_cuda=use_cuda,
+    )
+    val_loader = _make_text_loader(
+        val_texts, y_val, vocabulary, max_sequence_length, batch_size,
+        shuffle=False, use_cuda=use_cuda,
+    )
+    test_loader = _make_text_loader(
+        test_texts, y_test, vocabulary, max_sequence_length, batch_size,
+        shuffle=False, use_cuda=use_cuda,
+    )
+
     model = TextPricePredictor(
         vocab_size=len(vocabulary),
         embedding_dim=embedding_dim,
@@ -261,7 +294,13 @@ def train_text_model(
     ).to(device)
 
     loss_fn = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=lr_scheduler_factor,
+        patience=lr_scheduler_patience, verbose=True,
+    )
 
     # -- output paths ---------------------------------------------------------
     results_dir = RESULTS_DIR / city / "text_model"
@@ -322,6 +361,7 @@ def train_text_model(
             optimizer,
             device,
             label=f"Epoch {epoch}/{max_epochs} [train]",
+            grad_clip_max_norm=grad_clip_max_norm,
         )
         val_loss = _run_epoch(
             model,
@@ -335,10 +375,12 @@ def train_text_model(
         history.train_losses.append(train_loss)
         history.val_losses.append(val_loss)
         clear_device_cache(device)
+        scheduler.step(val_loss)
 
+        current_lr = optimizer.param_groups[0]["lr"]
         print(
             f"Epoch {epoch:03d} | Train Loss: {train_loss:.6f} "
-            f"| Val Loss: {val_loss:.6f}"
+            f"| Val Loss: {val_loss:.6f} | LR: {current_lr:.2e}"
         )
 
         if val_loss < best_val_loss:
@@ -409,7 +451,7 @@ def train_text_model(
     print("\n=== Text Model (test set) ===")
     print(f"  RMSE: {test_metrics['rmse']:.4f}")
     print(f"  MAE:  {test_metrics['mae']:.4f}")
-    print(f"  R²:   {test_metrics['r2']:.4f}")
+    print(f"  R2:   {test_metrics['r2']:.4f}")
     print(f"\nArtifacts saved to {results_dir}/")
 
 
@@ -433,9 +475,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dropout", type=float, default=DROPOUT)
     parser.add_argument("--rnn-type", choices=["lstm", "gru"], default=RNN_TYPE)
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE)
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--max-epochs", type=int, default=TEXT_MODEL_MAX_EPOCHS)
     parser.add_argument("--patience", type=int, default=TEXT_MODEL_PATIENCE)
+    parser.add_argument("--grad-clip", type=float, default=GRAD_CLIP_MAX_NORM)
+    parser.add_argument("--lr-scheduler-factor", type=float, default=LR_SCHEDULER_FACTOR)
+    parser.add_argument("--lr-scheduler-patience", type=int, default=LR_SCHEDULER_PATIENCE)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     parser.add_argument(
         "--device",
@@ -465,9 +511,13 @@ if __name__ == "__main__":
         dropout=args.dropout,
         rnn_type=args.rnn_type,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
         batch_size=args.batch_size,
         max_epochs=args.max_epochs,
         patience=args.patience,
+        grad_clip_max_norm=args.grad_clip,
+        lr_scheduler_factor=args.lr_scheduler_factor,
+        lr_scheduler_patience=args.lr_scheduler_patience,
         seed=args.seed,
         device_preference=args.device,
         resume_from_checkpoint=args.resume,

@@ -1,13 +1,14 @@
-"""Reproducible train / validation / test split."""
+"""Reproducible stratified train / validation / test split."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from config import RANDOM_SEED, TEST_RATIO, TRAIN_RATIO, VALIDATION_RATIO
+from config import RANDOM_SEED, TARGET_COLUMN, TEST_RATIO, TRAIN_RATIO, VALIDATION_RATIO
 
 
 @dataclass
@@ -19,6 +20,36 @@ class DatasetSplits:
     test: pd.DataFrame
 
 
+def _build_stratification_bins(
+    listings_df: pd.DataFrame,
+    n_price_bins: int = 10,
+) -> pd.Series:
+    """Create stratification labels from price quantiles and room type.
+
+    Combines binned log-price with room type to produce a composite
+    stratification key.  This ensures each split has a similar distribution
+    of prices **and** room types.
+
+    Args:
+        listings_df: Cleaned listings DataFrame.
+        n_price_bins: Number of quantile bins for the target variable.
+
+    Returns:
+        A Series of string labels suitable for ``stratify=`` parameter.
+    """
+    price_bins = pd.qcut(
+        listings_df[TARGET_COLUMN],
+        q=n_price_bins,
+        labels=False,
+        duplicates="drop",
+    ).astype(str)
+
+    if "room_type" in listings_df.columns:
+        room = listings_df["room_type"].astype(str)
+        return price_bins + "_" + room
+    return price_bins
+
+
 def split_dataset(
     listings_df: pd.DataFrame,
     random_seed: int = RANDOM_SEED,
@@ -28,8 +59,8 @@ def split_dataset(
 ) -> DatasetSplits:
     """Split a DataFrame into train, validation and test sets.
 
-    Uses random sampling (sklearn) with a fixed seed to guarantee
-    reproducibility.
+    Uses **stratified** random sampling to guarantee that each split has
+    a similar distribution of prices and room types.
 
     Args:
         listings_df: Cleaned listings DataFrame.
@@ -48,19 +79,37 @@ def split_dataset(
     if abs(total - 1.0) > 1e-9:
         raise ValueError(f"Ratios must sum to 1.0, got {total:.4f}.")
 
-    train_df, temp_df = train_test_split(
+    strat_labels = _build_stratification_bins(listings_df)
+
+    # Some composite bins may have very few members.  Fall back to
+    # un-stratified split for bins with fewer than 2 members by
+    # merging them into a catch-all group.
+    counts = strat_labels.value_counts()
+    rare_labels = counts[counts < 2].index
+    strat_labels = strat_labels.replace(rare_labels, "__rare__")
+
+    train_df, temp_df, strat_train, strat_temp = train_test_split(
         listings_df,
+        strat_labels,
         test_size=1.0 - train_ratio,
         random_state=random_seed,
         shuffle=True,
+        stratify=strat_labels,
     )
 
     validation_share = validation_ratio / (validation_ratio + test_ratio)
+
+    # Second split also stratified
+    temp_strat_counts = strat_temp.value_counts()
+    temp_rare = temp_strat_counts[temp_strat_counts < 2].index
+    strat_temp_safe = strat_temp.replace(temp_rare, "__rare__")
+
     validation_df, test_df = train_test_split(
         temp_df,
         test_size=1.0 - validation_share,
         random_state=random_seed,
         shuffle=True,
+        stratify=strat_temp_safe,
     )
 
     return DatasetSplits(

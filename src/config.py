@@ -36,13 +36,20 @@ NUMERIC_COLUMNS: list[str] = [
     "bathrooms",
     "bedrooms",
     "beds",
-    "latitude",
-    "longitude",
 ]
+
+SPATIAL_COLUMNS: list[str] = ["latitude", "longitude"]
 
 CATEGORICAL_COLUMNS: list[str] = ["room_type"]
 
 TEXT_COLUMNS: list[str] = [DESCRIPTION_COLUMN, NEIGHBORHOOD_OVERVIEW_COLUMN]
+
+# ---------------------------------------------------------------------------
+# Spatial feature engineering
+# ---------------------------------------------------------------------------
+# Approximate centre of London (Trafalgar Square)
+LONDON_CENTRE_LAT: float = 51.5074
+LONDON_CENTRE_LON: float = -0.1278
 
 # ---------------------------------------------------------------------------
 # Data cleaning
@@ -73,10 +80,14 @@ MAX_SEQUENCE_LENGTH: int = 120
 # ---------------------------------------------------------------------------
 BATCH_SIZE: int = 64
 LEARNING_RATE: float = 1e-3
+WEIGHT_DECAY: float = 1e-4
 DROPOUT: float = 0.2
 EMBEDDING_DIM: int = 100
 NUM_RNN_LAYERS: int = 1
 RNN_TYPE: str = "lstm"
+GRAD_CLIP_MAX_NORM: float = 1.0
+LR_SCHEDULER_FACTOR: float = 0.5
+LR_SCHEDULER_PATIENCE: int = 2
 
 # ---------------------------------------------------------------------------
 # Text model defaults

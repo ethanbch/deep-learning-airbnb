@@ -1,11 +1,11 @@
 feature,importance
-cat__room_type_Entire home/apt,0.42263773344605415
-num__latitude,0.172941505790981
-num__longitude,0.1713457314875342
-num__bathrooms,0.1393749930477722
-num__accommodates,0.04964633687309359
-num__bedrooms,0.02348279184175912
-num__beds,0.013187631319323078
-cat__room_type_Private room,0.0038373937740104726
-cat__room_type_Hotel room,0.0029485706444047502
-cat__room_type_Shared room,0.0005973117750673742
+cat__room_type_Entire home/apt,0.4190992692383829
+num__latitude,0.17417908085763525
+num__longitude,0.17303012401346382
+num__bathrooms,0.140654287920247
+num__accommodates,0.04594038108670355
+num__bedrooms,0.027493723836473017
+num__beds,0.013671639697803706
+cat__room_type_Hotel room,0.002605217555881936
+cat__room_type_Private room,0.0023702729990194757
+cat__room_type_Shared room,0.0009560027943892842

@@ -1,4 +1,4 @@
-"""Train tabular baseline models (OLS + Random Forest)."""
+"""Train tabular baseline models (OLS + Random Forest + TF-IDF Ridge)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
@@ -27,9 +28,10 @@ from config import (  # noqa: E402
     NUMERIC_COLUMNS,
     RANDOM_SEED,
     RESULTS_DIR,
+    SPATIAL_COLUMNS,
     TARGET_COLUMN,
 )
-from training.utils import evaluate_metrics, load_splits  # noqa: E402
+from training.utils import combine_text_columns, evaluate_metrics, load_splits  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,7 +39,7 @@ from training.utils import evaluate_metrics, load_splits  # noqa: E402
 
 
 def _select_features(listings_df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only numeric + categorical feature columns.
+    """Keep only numeric + spatial + categorical feature columns.
 
     Args:
         listings_df: Raw or processed listings DataFrame.
@@ -45,7 +47,7 @@ def _select_features(listings_df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with baseline feature columns only.
     """
-    candidates = [*NUMERIC_COLUMNS, *CATEGORICAL_COLUMNS]
+    candidates = [*NUMERIC_COLUMNS, *SPATIAL_COLUMNS, *CATEGORICAL_COLUMNS]
     available = [c for c in candidates if c in listings_df.columns]
     return listings_df[available].copy()
 
@@ -61,7 +63,9 @@ def _build_preprocessor(
     Returns:
         Tuple of ``(preprocessor, numeric_cols, categorical_cols)``.
     """
-    numeric = [c for c in NUMERIC_COLUMNS if c in features_df.columns]
+    numeric = [
+        c for c in [*NUMERIC_COLUMNS, *SPATIAL_COLUMNS] if c in features_df.columns
+    ]
     categorical = [c for c in CATEGORICAL_COLUMNS if c in features_df.columns]
 
     preprocessor = ColumnTransformer(
@@ -116,7 +120,7 @@ def _save_results(
 
 
 def run_baseline(city: str = DEFAULT_CITY) -> None:
-    """Train OLS and Random Forest baselines and save results.
+    """Train OLS, Random Forest and TF-IDF+Ridge baselines and save results.
 
     Args:
         city: City identifier whose processed splits will be loaded.
@@ -162,6 +166,28 @@ def run_baseline(city: str = DEFAULT_CITY) -> None:
     y_pred_rf = np.asarray(rf_pipeline.predict(x_test))
     rf_metrics = evaluate_metrics(y_test.to_numpy(), y_pred_rf)
 
+    # ---- TF-IDF + Ridge (text-only baseline) --------------------------------
+    train_texts = combine_text_columns(train_df, use_neighborhood_overview=True)
+    test_texts = combine_text_columns(test_df, use_neighborhood_overview=True)
+
+    tfidf_pipeline = Pipeline(
+        steps=[
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    max_features=20_000,
+                    ngram_range=(1, 2),
+                    min_df=3,
+                    sublinear_tf=True,
+                ),
+            ),
+            ("model", Ridge(alpha=1.0, random_state=RANDOM_SEED)),
+        ]
+    )
+    tfidf_pipeline.fit(train_texts, y_train)
+    y_pred_tfidf = np.asarray(tfidf_pipeline.predict(test_texts))
+    tfidf_metrics = evaluate_metrics(y_test.to_numpy(), y_pred_tfidf)
+
     # ---- Feature analysis ---------------------------------------------------
     feature_names = linear_pipeline.named_steps["preprocessor"].get_feature_names_out()
 
@@ -185,6 +211,7 @@ def run_baseline(city: str = DEFAULT_CITY) -> None:
         "models": {
             "linear_regression_ols": linear_metrics,
             "random_forest": rf_metrics,
+            "tfidf_ridge": tfidf_metrics,
         },
     }
 
@@ -193,12 +220,18 @@ def run_baseline(city: str = DEFAULT_CITY) -> None:
     print("\n[Linear Regression / OLS]")
     print(f"  RMSE: {linear_metrics['rmse']:.4f}")
     print(f"  MAE:  {linear_metrics['mae']:.4f}")
-    print(f"  R²:   {linear_metrics['r2']:.4f}")
+    print(f"  R2:   {linear_metrics['r2']:.4f}")
 
     print("\n[Random Forest]")
     print(f"  RMSE: {rf_metrics['rmse']:.4f}")
     print(f"  MAE:  {rf_metrics['mae']:.4f}")
-    print(f"  R²:   {rf_metrics['r2']:.4f}")
+    print(f"  R2:   {rf_metrics['r2']:.4f}")
+
+    print("\n=== Text Baseline ===")
+    print("\n[TF-IDF + Ridge]")
+    print(f"  RMSE: {tfidf_metrics['rmse']:.4f}")
+    print(f"  MAE:  {tfidf_metrics['mae']:.4f}")
+    print(f"  R2:   {tfidf_metrics['r2']:.4f}")
 
     print("\nTop 15 Feature Importances (Random Forest):")
     print(rf_importance_df.head(15).to_string(index=False))
